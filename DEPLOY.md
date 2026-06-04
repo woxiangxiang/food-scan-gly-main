@@ -56,6 +56,7 @@ pnpm upload:food-assets
 
 ```text
 Runtime: Node
+<<<<<<< HEAD
 Build Command: npm install
 Start Command: npm run start:server
 ```
@@ -63,6 +64,18 @@ Start Command: npm run start:server
 如果页面里出现 Bun 相关选项，后端服务这里不要选 Bun，选择 Node。
 
 不要使用 `corepack enable && pnpm install`。Render 的系统目录可能不允许 Corepack 改写 `/usr/bin/pnpm`，会导致 `EROFS: read-only file system`。
+=======
+Build Command: pnpm install
+Start Command: pnpm start:server
+```
+
+如果 Render 没有自动启用 pnpm，可以使用：
+
+```text
+Build Command: corepack enable && pnpm install
+Start Command: pnpm start:server
+```
+>>>>>>> 5eaa07f764f3ade81672a10459f5329b700c91ce
 
 Render 后端环境变量：
 
@@ -109,6 +122,7 @@ https://你的-render域名/api/debug/config
 推荐配置：
 
 ```text
+<<<<<<< HEAD
 Framework Preset: Other
 Install Command: npm install
 Build Command: npm run build
@@ -117,6 +131,14 @@ Output Directory: 留空，不要填 dist
 
 本项目是 TanStack Start，不是普通静态 Vite。仓库里的 `vercel.json` 会让构建生成 Vercel 需要的 `.vercel/output`，所以 Vercel 前端项目不要按 `dist` 静态目录发布。
 
+=======
+Framework Preset: Vite
+Install Command: pnpm install
+Build Command: pnpm build
+Output Directory: dist
+```
+
+>>>>>>> 5eaa07f764f3ade81672a10459f5329b700c91ce
 Vercel 前端环境变量：
 
 ```env
