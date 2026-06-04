@@ -1,4 +1,6 @@
-import { useEffect, useState, useCallback } from "react";
+import { useCallback, useEffect, useState } from "react";
+
+import { supabase } from "@/lib/supabase";
 
 export interface GlucoseEntry {
   id: string;
@@ -6,51 +8,75 @@ export interface GlucoseEntry {
   timestamp: number;
 }
 
-const KEY = "bloodGlucose";
+type GlucoseRow = {
+  id: string;
+  value: number | string;
+  measured_at: string;
+};
 
-function read(): GlucoseEntry[] {
-  if (typeof window === "undefined") return [];
-  try {
-    const raw = localStorage.getItem(KEY);
-    if (!raw) return [];
-    const arr = JSON.parse(raw);
-    return Array.isArray(arr) ? arr : [];
-  } catch {
-    return [];
-  }
+function mapRow(row: GlucoseRow): GlucoseEntry {
+  return {
+    id: row.id,
+    value: Number(row.value),
+    timestamp: new Date(row.measured_at).getTime(),
+  };
 }
 
-export function useGlucose() {
+export function useGlucose(userId: string) {
   const [entries, setEntries] = useState<GlucoseEntry[]>([]);
+  const [loading, setLoading] = useState(true);
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    const { data, error } = await supabase
+      .from("glucose_entries")
+      .select("id,value,measured_at")
+      .eq("user_id", userId)
+      .order("measured_at", { ascending: true });
+
+    if (error) {
+      setLoading(false);
+      throw error;
+    }
+
+    setEntries((data ?? []).map(mapRow));
+    setLoading(false);
+  }, [userId]);
 
   useEffect(() => {
-    setEntries(read());
-    const onStorage = (e: StorageEvent) => {
-      if (e.key === KEY) setEntries(read());
-    };
-    window.addEventListener("storage", onStorage);
-    return () => window.removeEventListener("storage", onStorage);
-  }, []);
-
-  const persist = (next: GlucoseEntry[]) => {
-    setEntries(next);
-    localStorage.setItem(KEY, JSON.stringify(next));
-  };
+    load().catch((error) => {
+      console.error("Failed to load glucose entries:", error);
+      setLoading(false);
+    });
+  }, [load]);
 
   const add = useCallback(
-    (value: number) => {
-      const next = [
-        ...read(),
-        { id: crypto.randomUUID(), value, timestamp: Date.now() },
-      ].sort((a, b) => a.timestamp - b.timestamp);
-      persist(next);
+    async (value: number) => {
+      const measuredAt = new Date().toISOString();
+      const { data, error } = await supabase
+        .from("glucose_entries")
+        .insert({
+          user_id: userId,
+          value,
+          measured_at: measuredAt,
+          measurement_type: "unspecified",
+        })
+        .select("id,value,measured_at")
+        .single();
+
+      if (error) throw error;
+
+      setEntries((current) => [...current, mapRow(data)].sort((a, b) => a.timestamp - b.timestamp));
     },
-    [],
+    [userId],
   );
 
-  const remove = useCallback((id: string) => {
-    persist(read().filter((e) => e.id !== id));
+  const remove = useCallback(async (id: string) => {
+    const { error } = await supabase.from("glucose_entries").delete().eq("id", id);
+    if (error) throw error;
+
+    setEntries((current) => current.filter((entry) => entry.id !== id));
   }, []);
 
-  return { entries, add, remove };
+  return { entries, loading, add, remove, reload: load };
 }

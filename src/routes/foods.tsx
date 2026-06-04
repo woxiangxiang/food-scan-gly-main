@@ -2,7 +2,8 @@ import { createFileRoute } from "@tanstack/react-router";
 import { useMemo, useState } from "react";
 import { Search } from "lucide-react";
 
-import { FOODS, giLabel, giLevel } from "@/data/foods";
+import { giLabel, giLevel } from "@/data/foods";
+import { useFoods } from "@/hooks/use-foods";
 import { Input } from "@/components/ui/input";
 
 type Filter = "all" | "low" | "mid" | "high";
@@ -27,14 +28,15 @@ export const Route = createFileRoute("/foods")({
 function FoodsPage() {
   const [filter, setFilter] = useState<Filter>("all");
   const [q, setQ] = useState("");
+  const { foods, loading } = useFoods();
 
   const list = useMemo(() => {
-    return FOODS.filter((f) => {
+    return foods.filter((f) => {
       if (filter !== "all" && giLevel(f.gi) !== filter) return false;
       if (q && !f.name.includes(q.trim())) return false;
       return true;
     });
-  }, [filter, q]);
+  }, [filter, foods, q]);
 
   return (
     <main className="flex flex-col gap-4 px-4 pt-6">
@@ -75,6 +77,11 @@ function FoodsPage() {
 
       {/* F-B: grid */}
       <section className="grid grid-cols-2 gap-3">
+        {loading && (
+          <p className="col-span-2 py-4 text-center text-sm text-muted-foreground">
+            正在读取食物图片…
+          </p>
+        )}
         {list.map((f) => {
           const l = giLevel(f.gi);
           return (
@@ -82,8 +89,8 @@ function FoodsPage() {
               key={f.id}
               className="flex flex-col rounded-2xl border border-border bg-card p-3 shadow-sm transition active:scale-[0.98]"
             >
-              <div className="flex aspect-square items-center justify-center rounded-xl bg-muted/60 text-5xl">
-                {f.image}
+              <div className="aspect-square overflow-hidden rounded-xl bg-muted/60">
+                <img src={f.image} alt={f.name} className="size-full object-cover" loading="lazy" />
               </div>
               <div className="mt-2 flex items-baseline justify-between">
                 <h3 className="text-sm font-medium">{f.name}</h3>
@@ -95,7 +102,9 @@ function FoodsPage() {
                   {f.gi}
                 </span>
               </div>
-              <p className="mt-0.5 text-[10px] text-muted-foreground">{giLabel(f.gi)} · {f.type}</p>
+              <p className="mt-0.5 text-[10px] text-muted-foreground">
+                {f.source === "recognition" ? "我的识别" : `${giLabel(f.gi)} · ${f.type}`}
+              </p>
               <p className="mt-1 line-clamp-2 text-xs leading-relaxed text-muted-foreground">
                 {f.description}
               </p>

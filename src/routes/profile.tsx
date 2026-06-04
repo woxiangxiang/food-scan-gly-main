@@ -1,6 +1,6 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { useMemo, useState } from "react";
-import { Trash2, Plus, Droplet } from "lucide-react";
+import { Trash2, Plus, Droplet, LogOut, UserRound } from "lucide-react";
 import {
   LineChart,
   Line,
@@ -13,7 +13,9 @@ import {
 } from "recharts";
 import { toast } from "sonner";
 
+import { useAuth } from "@/hooks/use-auth";
 import { useGlucose } from "@/hooks/use-glucose";
+import { isSupabaseConfigured, supabase } from "@/lib/supabase";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -37,7 +39,25 @@ export const Route = createFileRoute("/profile")({
 });
 
 function ProfilePage() {
-  const { entries, add, remove } = useGlucose();
+  const auth = useAuth();
+
+  if (auth.loading) {
+    return (
+      <main className="flex min-h-[60vh] items-center justify-center px-4 pt-6">
+        <p className="text-sm text-muted-foreground">正在读取登录状态…</p>
+      </main>
+    );
+  }
+
+  if (!auth.isAuthenticated || !auth.user) {
+    return <AuthPage />;
+  }
+
+  return <GlucoseProfile userId={auth.user.id} userEmail={auth.user.email ?? ""} />;
+}
+
+function GlucoseProfile({ userId, userEmail }: { userId: string; userEmail: string }) {
+  const { entries, loading, add, remove } = useGlucose(userId);
 
   const last30 = useMemo(() => {
     const cutoff = Date.now() - 30 * 86400000;
@@ -67,11 +87,22 @@ function ProfilePage() {
       <header className="flex items-center justify-between">
         <div>
           <h1 className="text-2xl font-semibold tracking-tight">我的</h1>
-          <p className="text-sm text-muted-foreground">血糖趋势与记录</p>
+          <p className="text-sm text-muted-foreground">{userEmail || "血糖趋势与记录"}</p>
         </div>
-        <div className="rounded-full bg-primary/10 p-3 text-primary">
-          <Droplet className="size-5" />
-        </div>
+        <button
+          onClick={async () => {
+            const { error } = await supabase.auth.signOut();
+            if (error) {
+              toast.error(error.message);
+              return;
+            }
+            toast.success("已退出登录");
+          }}
+          className="rounded-full bg-primary/10 p-3 text-primary transition hover:bg-primary/15"
+          aria-label="退出登录"
+        >
+          <LogOut className="size-5" />
+        </button>
       </header>
 
       {/* P-A chart */}
@@ -107,6 +138,10 @@ function ProfilePage() {
                 />
               </LineChart>
             </ResponsiveContainer>
+          ) : loading ? (
+            <div className="flex h-full items-center justify-center text-sm text-muted-foreground">
+              正在读取血糖记录…
+            </div>
           ) : (
             <div className="flex h-full items-center justify-center text-sm text-muted-foreground">
               暂无数据，记录一次血糖开始追踪吧
@@ -124,8 +159,8 @@ function ProfilePage() {
 
       {/* P-C record button */}
       <RecordDialog
-        onSave={(v) => {
-          add(v);
+        onSave={async (v) => {
+          await add(v);
           toast.success(`已记录 ${v.toFixed(1)} mmol/L`);
         }}
       />
@@ -133,7 +168,9 @@ function ProfilePage() {
       {/* P-D history */}
       <section className="rounded-2xl border border-border bg-card p-4 shadow-sm">
         <h2 className="mb-2 text-sm font-medium">历史记录</h2>
-        {entries.length === 0 ? (
+        {loading ? (
+          <p className="py-8 text-center text-sm text-muted-foreground">正在读取记录…</p>
+        ) : entries.length === 0 ? (
           <p className="py-8 text-center text-sm text-muted-foreground">尚无记录</p>
         ) : (
           <ul className="divide-y divide-border">
@@ -151,7 +188,14 @@ function ProfilePage() {
                   </p>
                 </div>
                 <button
-                  onClick={() => remove(e.id)}
+                  onClick={async () => {
+                    try {
+                      await remove(e.id);
+                      toast.success("已删除记录");
+                    } catch (error) {
+                      toast.error(error instanceof Error ? error.message : "删除失败");
+                    }
+                  }}
                   className="rounded-full p-2 text-muted-foreground transition hover:bg-destructive/10 hover:text-destructive"
                   aria-label="删除"
                 >
@@ -161,6 +205,107 @@ function ProfilePage() {
             ))}
           </ul>
         )}
+      </section>
+    </main>
+  );
+}
+
+function AuthPage() {
+  const [mode, setMode] = useState<"login" | "register">("login");
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [pending, setPending] = useState(false);
+
+  const submit = async () => {
+    if (!isSupabaseConfigured) {
+      toast.error("缺少 Supabase 配置，请检查 VITE_SUPABASE_URL 和 VITE_SUPABASE_ANON_KEY");
+      return;
+    }
+
+    if (!email || !password) {
+      toast.error("请输入邮箱和密码");
+      return;
+    }
+
+    if (password.length < 6) {
+      toast.error("密码至少 6 位");
+      return;
+    }
+
+    setPending(true);
+    const { error } =
+      mode === "login"
+        ? await supabase.auth.signInWithPassword({ email, password })
+        : await supabase.auth.signUp({ email, password });
+    setPending(false);
+
+    if (error) {
+      toast.error(error.message);
+      return;
+    }
+
+    toast.success(mode === "login" ? "登录成功" : "注册成功，请按邮箱验证设置继续操作");
+  };
+
+  return (
+    <main className="flex flex-col gap-4 px-4 pt-6">
+      <header className="flex items-center justify-between">
+        <div>
+          <h1 className="text-2xl font-semibold tracking-tight">我的</h1>
+          <p className="text-sm text-muted-foreground">登录后记录你的血糖趋势</p>
+        </div>
+        <div className="rounded-full bg-primary/10 p-3 text-primary">
+          <UserRound className="size-5" />
+        </div>
+      </header>
+
+      <section className="rounded-2xl border border-border bg-card p-4 shadow-sm">
+        <div className="grid grid-cols-2 rounded-xl bg-muted p-1">
+          <button
+            onClick={() => setMode("login")}
+            className={`rounded-lg py-2 text-sm font-medium transition ${
+              mode === "login" ? "bg-card text-foreground shadow-sm" : "text-muted-foreground"
+            }`}
+          >
+            登录
+          </button>
+          <button
+            onClick={() => setMode("register")}
+            className={`rounded-lg py-2 text-sm font-medium transition ${
+              mode === "register" ? "bg-card text-foreground shadow-sm" : "text-muted-foreground"
+            }`}
+          >
+            注册
+          </button>
+        </div>
+
+        <div className="mt-5 space-y-4">
+          <div className="space-y-2">
+            <Label htmlFor="email">邮箱</Label>
+            <Input
+              id="email"
+              type="email"
+              value={email}
+              onChange={(e) => setEmail(e.target.value)}
+              placeholder="you@example.com"
+              autoComplete="email"
+            />
+          </div>
+          <div className="space-y-2">
+            <Label htmlFor="password">密码</Label>
+            <Input
+              id="password"
+              type="password"
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
+              placeholder="至少 6 位"
+              autoComplete={mode === "login" ? "current-password" : "new-password"}
+            />
+          </div>
+          <Button onClick={submit} disabled={pending} className="h-11 w-full rounded-xl">
+            {pending ? "处理中…" : mode === "login" ? "登录" : "注册"}
+          </Button>
+        </div>
       </section>
     </main>
   );
@@ -185,19 +330,28 @@ function StatCard({
   );
 }
 
-function RecordDialog({ onSave }: { onSave: (v: number) => void }) {
+function RecordDialog({ onSave }: { onSave: (v: number) => Promise<void> }) {
   const [open, setOpen] = useState(false);
   const [val, setVal] = useState("");
+  const [pending, setPending] = useState(false);
 
-  const submit = () => {
+  const submit = async () => {
     const n = parseFloat(val);
     if (Number.isNaN(n) || n < 2 || n > 30) {
       toast.error("请输入 2 - 30 之间的数值");
       return;
     }
-    onSave(n);
-    setVal("");
-    setOpen(false);
+
+    try {
+      setPending(true);
+      await onSave(n);
+      setVal("");
+      setOpen(false);
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "保存失败");
+    } finally {
+      setPending(false);
+    }
   };
 
   return (
@@ -226,8 +380,8 @@ function RecordDialog({ onSave }: { onSave: (v: number) => void }) {
           <p className="text-xs text-muted-foreground">建议范围 2.0 - 30.0</p>
         </div>
         <DialogFooter>
-          <Button variant="outline" onClick={() => setOpen(false)}>取消</Button>
-          <Button onClick={submit}>保存</Button>
+          <Button variant="outline" onClick={() => setOpen(false)} disabled={pending}>取消</Button>
+          <Button onClick={submit} disabled={pending}>{pending ? "保存中…" : "保存"}</Button>
         </DialogFooter>
       </DialogContent>
     </Dialog>
