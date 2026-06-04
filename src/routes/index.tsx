@@ -1,12 +1,13 @@
 import { createFileRoute } from "@tanstack/react-router";
-import { useServerFn } from "@tanstack/react-start";
 import { useMutation } from "@tanstack/react-query";
-import { useRef, useState } from "react";
-import { Camera, Loader2, ImagePlus, Sparkles } from "lucide-react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { Camera, Loader2, ImagePlus, Sparkles, BookmarkPlus, Send } from "lucide-react";
 import { toast } from "sonner";
 
-import { recognizeFood } from "@/lib/api/recognize.functions";
 import { giLabel, giLevel } from "@/data/foods";
+import { useAuth } from "@/hooks/use-auth";
+import { useFoods } from "@/hooks/use-foods";
+import { supabase } from "@/lib/supabase";
 import { Button } from "@/components/ui/button";
 
 export const Route = createFileRoute("/")({
@@ -20,6 +21,30 @@ export const Route = createFileRoute("/")({
 });
 
 const MAX_SIZE = 3 * 1024 * 1024;
+const API_BASE_URL = import.meta.env.VITE_API_BASE_URL ?? "http://localhost:3002";
+
+type RecognitionResult = {
+  food: string;
+  gi: number | null;
+  diabetesFriendly: boolean | null;
+  advice: string;
+  portion: string;
+  nutrition: {
+    calories: string | number | null;
+    carbohydrates: string | number | null;
+    protein: string | number | null;
+    fat: string | number | null;
+    fiber: string | number | null;
+  };
+  error?: string;
+};
+
+function getGiType(gi: number | null): "low" | "medium" | "high" | null {
+  if (gi == null) return null;
+  if (gi <= 55) return "low";
+  if (gi <= 70) return "medium";
+  return "high";
+}
 
 function fileToBase64(file: File): Promise<{ b64: string; mime: string }> {
   return new Promise((resolve, reject) => {
@@ -36,17 +61,43 @@ function fileToBase64(file: File): Promise<{ b64: string; mime: string }> {
 }
 
 function DetectPage() {
-  const recognize = useServerFn(recognizeFood);
+  const auth = useAuth();
+  const { foods } = useFoods();
   const cameraRef = useRef<HTMLInputElement>(null);
   const albumRef = useRef<HTMLInputElement>(null);
+  const autoSavingKeyRef = useRef("");
   const [preview, setPreview] = useState<string | null>(null);
+  const [selectedFile, setSelectedFile] = useState<File | null>(null);
+  const [autoSavedKey, setAutoSavedKey] = useState("");
+  const [savingHistory, setSavingHistory] = useState(false);
+  const [submittingSuggestion, setSubmittingSuggestion] = useState(false);
 
   const mutation = useMutation({
     mutationFn: async (file: File) => {
       if (file.size > MAX_SIZE) throw new Error("图片需小于 3MB");
       const { b64, mime } = await fileToBase64(file);
       setPreview(URL.createObjectURL(file));
-      return recognize({ data: { imageBase64: b64, mimeType: mime } });
+      setSelectedFile(file);
+      setAutoSavedKey("");
+      const response = await fetch(`${API_BASE_URL}/api/recognize`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ imageBase64: b64, mimeType: mime }),
+      });
+      const text = await response.text();
+      let data: RecognitionResult;
+
+      try {
+        data = JSON.parse(text) as RecognitionResult;
+      } catch {
+        throw new Error(text.slice(0, 200) || "后端没有返回有效 JSON");
+      }
+
+      if (!response.ok) {
+        throw new Error(data.error || "识别失败");
+      }
+
+      return data;
     },
     onError: (e: Error) => toast.error(e.message || "识别失败"),
   });
@@ -58,6 +109,134 @@ function DetectPage() {
 
   const result = mutation.data;
   const level = result?.gi != null ? giLevel(result.gi) : null;
+  const matchedFood = useMemo(() => {
+    if (!result?.food) return null;
+    const name = result.food.trim();
+    return (
+      foods.find((food) => food.name === name) ||
+      foods.find((food) => name.includes(food.name) || food.name.includes(name)) ||
+      null
+    );
+  }, [foods, result?.food]);
+  const isKnownFood = Boolean(matchedFood);
+
+  const requireLogin = () => {
+    if (auth.loading) {
+      toast.info("正在读取登录状态，请稍后再试");
+      return false;
+    }
+
+    if (!auth.user) {
+      toast.error("请先到“我的”页面登录");
+      return false;
+    }
+
+    return true;
+  };
+
+  const uploadRecognitionImage = async () => {
+    if (!selectedFile || !auth.user) {
+      return { imageBucket: null, imagePath: null, imageMimeType: null };
+    }
+
+    const extension = selectedFile.name.split(".").pop()?.toLowerCase() || "jpg";
+    const imagePath = `${auth.user.id}/${crypto.randomUUID()}.${extension}`;
+    const { error } = await supabase.storage
+      .from("user-food-images")
+      .upload(imagePath, selectedFile, {
+        contentType: selectedFile.type || "image/jpeg",
+        upsert: false,
+      });
+
+    if (error) throw error;
+
+    return {
+      imageBucket: "user-food-images",
+      imagePath,
+      imageMimeType: selectedFile.type || "image/jpeg",
+    };
+  };
+
+  const saveRecognition = async ({ quiet = false }: { quiet?: boolean } = {}) => {
+    if (!result || !requireLogin()) return false;
+
+    setSavingHistory(true);
+    let imageData: Awaited<ReturnType<typeof uploadRecognitionImage>>;
+
+    try {
+      imageData = await uploadRecognitionImage();
+    } catch (error) {
+      setSavingHistory(false);
+      toast.error(error instanceof Error ? error.message : "图片保存失败");
+      return false;
+    }
+
+    const { error } = await supabase.from("food_recognitions").insert({
+      user_id: auth.user!.id,
+      food_name: result.food || "未识别",
+      gi: result.gi,
+      diabetes_friendly: result.diabetesFriendly,
+      advice: result.advice || "",
+      portion: result.portion || "",
+      nutrition: result.nutrition,
+      is_known_food: isKnownFood,
+      matched_food_id: matchedFood?.id ?? null,
+      image_bucket: imageData.imageBucket,
+      image_path: imageData.imagePath,
+      image_mime_type: imageData.imageMimeType,
+    });
+    setSavingHistory(false);
+
+    if (error) {
+      toast.error(error.message);
+      return false;
+    }
+
+    if (!quiet) toast.success("已保存识别记录");
+    return true;
+  };
+
+  const submitSuggestion = async () => {
+    if (!result || !requireLogin()) return;
+
+    if (isKnownFood) {
+      toast.info("这个食物已经收录在食物库中");
+      return;
+    }
+
+    setSubmittingSuggestion(true);
+    const { error } = await supabase.from("food_item_suggestions").insert({
+      user_id: auth.user!.id,
+      name: result.food || "未识别",
+      gi: result.gi,
+      gi_type: getGiType(result.gi),
+      advice: result.advice || "",
+      portion: result.portion || "",
+      nutrition: result.nutrition,
+      source_image_url: null,
+      status: "pending",
+    });
+    setSubmittingSuggestion(false);
+
+    if (error) {
+      toast.error(error.message);
+      return;
+    }
+
+    toast.success("已提交收录建议");
+  };
+
+  useEffect(() => {
+    if (!result || !isKnownFood || !auth.user || !selectedFile) return;
+    const key = `${result.food}:${result.gi}:${selectedFile.name}:${selectedFile.size}:${selectedFile.lastModified}`;
+    if (autoSavedKey === key || autoSavingKeyRef.current === key) return;
+
+    autoSavingKeyRef.current = key;
+    setAutoSavedKey(key);
+    saveRecognition({ quiet: true }).then(() => {
+      autoSavingKeyRef.current = "";
+    });
+  }, [auth.user, autoSavedKey, isKnownFood, result, selectedFile]);
 
   return (
     <main className="flex flex-col gap-4 px-4 pt-6">
@@ -130,12 +309,10 @@ function DetectPage() {
             <div className="flex items-end justify-between gap-3">
               <div>
                 <p className="text-xs text-muted-foreground">食物</p>
-                <p className="text-xl font-semibold">{result.name || "未识别"}</p>
-                {result.confidence > 0 && (
-                  <p className="text-xs text-muted-foreground">
-                    置信度 {(result.confidence * 100).toFixed(0)}%
-                  </p>
-                )}
+                <p className="text-xl font-semibold">{result.food || "未识别"}</p>
+                <p className="mt-1 text-xs text-muted-foreground">
+                  {isKnownFood ? "已收录到食物库" : "AI 识别，暂未收录"}
+                </p>
               </div>
               {result.gi != null ? (
                 <div
@@ -156,11 +333,52 @@ function DetectPage() {
                 </span>
               )}
             </div>
+            <div className="grid grid-cols-2 gap-2 text-sm">
+              <div className="rounded-xl bg-muted/60 p-3">
+                <p className="text-xs text-muted-foreground">是否适合糖尿病患者</p>
+                <p className="mt-1 font-medium">
+                  {result.diabetesFriendly == null
+                    ? "需结合用量判断"
+                    : result.diabetesFriendly
+                      ? "相对适合"
+                      : "不太适合"}
+                </p>
+              </div>
+              <div className="rounded-xl bg-muted/60 p-3">
+                <p className="text-xs text-muted-foreground">用量</p>
+                <p className="mt-1 font-medium">{result.portion || "建议少量尝试"}</p>
+              </div>
+            </div>
             {result.advice && (
-              <p className="rounded-xl bg-muted/60 p-3 text-sm leading-relaxed text-foreground/80">
-                💡 {result.advice}
-              </p>
+              <div className="rounded-xl bg-muted/60 p-3 text-sm leading-relaxed text-foreground/80">
+                <p className="mb-1 text-xs text-muted-foreground">建议</p>
+                <p>{result.advice}</p>
+              </div>
             )}
+            <div className="rounded-xl bg-muted/60 p-3">
+              <p className="mb-2 text-xs text-muted-foreground">营养成分估算</p>
+              <div className="grid grid-cols-2 gap-x-4 gap-y-1 text-sm">
+                <span>热量：{result.nutrition.calories ?? "未知"}</span>
+                <span>碳水：{result.nutrition.carbohydrates ?? "未知"}</span>
+                <span>蛋白质：{result.nutrition.protein ?? "未知"}</span>
+                <span>脂肪：{result.nutrition.fat ?? "未知"}</span>
+                <span>膳食纤维：{result.nutrition.fiber ?? "未知"}</span>
+              </div>
+            </div>
+            <div className="grid grid-cols-2 gap-2">
+              <Button variant="secondary" onClick={() => saveRecognition()} disabled={savingHistory}>
+                <BookmarkPlus className="size-4" />
+                {savingHistory ? "保存中" : "保存记录"}
+              </Button>
+              <Button
+                variant="outline"
+                onClick={submitSuggestion}
+                disabled={submittingSuggestion || isKnownFood}
+              >
+                <Send className="size-4" />
+                {submittingSuggestion ? "提交中" : "提交收录"}
+              </Button>
+            </div>
           </div>
         ) : (
           <p className="py-10 text-center text-sm text-muted-foreground">
