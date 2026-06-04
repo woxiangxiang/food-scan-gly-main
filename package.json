@@ -8,8 +8,8 @@
   },
   "scripts": {
     "dev": "vite dev",
-    "dev:server": "node server.mjs",
-    "start:server": "node server.mjs",
+    "dev:server": "node backend/server.mjs",
+    "start:server": "node backend/server.mjs",
     "upload:food-assets": "node scripts/upload-food-assets.mjs",
     "build": "vite build",
     "build:dev": "vite build --mode development",
