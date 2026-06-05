@@ -20,10 +20,26 @@ function isLocalDevOrigin(origin) {
   }
 }
 
+function normalizeOrigin(origin) {
+  return typeof origin === "string" ? origin.trim().replace(/\/+$/, "") : "";
+}
+
+function getConfiguredCorsOrigins() {
+  return (process.env.CORS_ORIGIN || "")
+    .split(",")
+    .map(normalizeOrigin)
+    .filter(Boolean);
+}
+
 app.use((req, res, next) => {
   const origin = req.headers.origin;
-  const allowedOrigin =
-    process.env.CORS_ORIGIN || (origin && isLocalDevOrigin(origin) ? origin : "http://localhost:5173");
+  const normalizedOrigin = normalizeOrigin(origin);
+  const configuredOrigins = getConfiguredCorsOrigins();
+  const allowedOrigin = configuredOrigins.includes(normalizedOrigin)
+    ? normalizedOrigin
+    : origin && isLocalDevOrigin(origin)
+      ? origin
+      : configuredOrigins[0] || "http://localhost:5173";
 
   res.setHeader("Access-Control-Allow-Origin", allowedOrigin);
   res.setHeader("Access-Control-Allow-Methods", "GET,POST,OPTIONS");
@@ -143,6 +159,7 @@ app.get("/api/debug/config", (_req, res) => {
     ok: true,
     hasDashScopeApiKey: Boolean(process.env.DASHSCOPE_API_KEY),
     model,
+    corsOrigin: getConfiguredCorsOrigins(),
   });
 });
 

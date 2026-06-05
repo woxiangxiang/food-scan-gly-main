@@ -21,7 +21,14 @@ export const Route = createFileRoute("/")({
 });
 
 const MAX_SIZE = 3 * 1024 * 1024;
-const API_BASE_URL = import.meta.env.VITE_API_BASE_URL ?? "http://localhost:3002";
+const API_BASE_URL = import.meta.env.VITE_API_BASE_URL;
+const DEFAULT_LOCAL_API_BASE_URL = "http://localhost:3002";
+
+function getApiBaseUrl() {
+  if (API_BASE_URL) return API_BASE_URL;
+  if (import.meta.env.DEV) return DEFAULT_LOCAL_API_BASE_URL;
+  throw new Error("VITE_API_BASE_URL is not configured in Vercel");
+}
 
 type RecognitionResult = {
   food: string;
@@ -79,11 +86,20 @@ function DetectPage() {
       setPreview(URL.createObjectURL(file));
       setSelectedFile(file);
       setAutoSavedKey("");
-      const response = await fetch(`${API_BASE_URL}/api/recognize`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ imageBase64: b64, mimeType: mime }),
-      });
+      const apiBaseUrl = getApiBaseUrl();
+      let response: Response;
+
+      try {
+        response = await fetch(`${apiBaseUrl}/api/recognize`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ imageBase64: b64, mimeType: mime }),
+        });
+      } catch (error) {
+        throw new Error(
+          `Cannot reach recognition API at ${apiBaseUrl}. Check VITE_API_BASE_URL and Render CORS_ORIGIN.`,
+        );
+      }
       const text = await response.text();
       let data: RecognitionResult;
 
@@ -112,9 +128,10 @@ function DetectPage() {
   const matchedFood = useMemo(() => {
     if (!result?.food) return null;
     const name = result.food.trim();
+    const libraryFoods = foods.filter((food) => food.source !== "recognition");
     return (
-      foods.find((food) => food.name === name) ||
-      foods.find((food) => name.includes(food.name) || food.name.includes(name)) ||
+      libraryFoods.find((food) => food.name === name) ||
+      libraryFoods.find((food) => name.includes(food.name) || food.name.includes(name)) ||
       null
     );
   }, [foods, result?.food]);
@@ -135,7 +152,7 @@ function DetectPage() {
   };
 
   const uploadRecognitionImage = async () => {
-    if (!selectedFile || !auth.user) {
+    if (!selectedFile || !auth.user || isKnownFood) {
       return { imageBucket: null, imagePath: null, imageMimeType: null };
     }
 
@@ -227,7 +244,7 @@ function DetectPage() {
   };
 
   useEffect(() => {
-    if (!result || !isKnownFood || !auth.user || !selectedFile) return;
+    if (!result || isKnownFood || !auth.user || !selectedFile) return;
     const key = `${result.food}:${result.gi}:${selectedFile.name}:${selectedFile.size}:${selectedFile.lastModified}`;
     if (autoSavedKey === key || autoSavingKeyRef.current === key) return;
 
