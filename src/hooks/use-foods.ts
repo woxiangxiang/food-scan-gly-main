@@ -14,14 +14,7 @@ type FoodRow = {
 };
 
 type RecognitionRow = {
-  id: string;
-  food_name: string;
-  gi: number | null;
-  advice: string;
   matched_food_id: string | null;
-  image_bucket: string | null;
-  image_path: string | null;
-  created_at: string;
 };
 
 function mapRow(row: FoodRow): Food {
@@ -64,23 +57,24 @@ export function useFoods() {
       }
 
       const libraryFoods = data && data.length > 0 ? data.map((row) => mapRow(row as FoodRow)) : FOODS;
-      let recognitionFoods: Food[] = [];
       let pinnedFoodIds: string[] = [];
 
       if (auth.user) {
         const { data: recognitions, error: recognitionError } = await supabase
           .from("food_recognitions")
-          .select("id,food_name,gi,advice,matched_food_id,image_bucket,image_path,created_at")
+          .select("matched_food_id")
           .eq("user_id", auth.user.id)
+          .not("matched_food_id", "is", null)
           .order("created_at", { ascending: false })
-          .limit(12);
+          .limit(20);
 
         if (recognitionError) {
-          console.error("Failed to load recognition images:", recognitionError);
+          console.error("Failed to load recognition pins:", recognitionError);
         } else {
           const libraryFoodIds = new Set(libraryFoods.map((food) => food.id));
           const seenPinnedFoodIds = new Set<string>();
           const userRecognitions = (recognitions ?? []).map((row) => row as RecognitionRow);
+
           pinnedFoodIds = userRecognitions
             .map((recognition) => recognition.matched_food_id)
             .filter((id): id is string => typeof id === "string" && libraryFoodIds.has(id))
@@ -89,32 +83,6 @@ export function useFoods() {
               seenPinnedFoodIds.add(id);
               return true;
             });
-
-          recognitionFoods = await Promise.all(
-            userRecognitions
-              .filter((recognition) => !recognition.matched_food_id && recognition.image_path)
-              .map(async (recognition) => {
-              let image = "";
-
-              if (recognition.image_bucket && recognition.image_path) {
-                const { data: signed } = await supabase.storage
-                  .from(recognition.image_bucket)
-                  .createSignedUrl(recognition.image_path, 60 * 60);
-                image = signed?.signedUrl ?? "";
-              }
-
-              return {
-                id: `recognition-${recognition.id}`,
-                name: recognition.food_name,
-                gi: recognition.gi ?? 0,
-                type: recognition.gi == null ? "low" : recognition.gi <= 55 ? "low" : recognition.gi <= 70 ? "medium" : "high",
-                description: recognition.advice || "来自你的拍照识别记录",
-                image,
-                source: "recognition" as const,
-              };
-            }),
-          );
-          recognitionFoods = recognitionFoods.filter((food) => food.image);
         }
       }
 
@@ -124,7 +92,7 @@ export function useFoods() {
         .filter((food): food is Food => Boolean(food));
       const unpinnedLibraryFoods = libraryFoods.filter((food) => !pinnedFoodIdSet.has(food.id));
 
-      setFoods([...pinnedLibraryFoods, ...recognitionFoods, ...unpinnedLibraryFoods]);
+      setFoods([...pinnedLibraryFoods, ...unpinnedLibraryFoods]);
       setLoading(false);
     }
 
